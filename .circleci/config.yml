@@ -1,0 +1,102 @@
+version: 2
+
+jobs:
+  ruby:
+    parallelism: 2
+    docker:
+      - image: ruby:2.4.0-slim
+      - image: circleci/postgres:10-alpine-ram
+      
+    steps:
+      - restore_cache:
+          key: grilled-source-v2
+      
+      - run:
+          name: install deps
+          command: |
+            apt-get update
+            apt-get install -y git openssh-client build-essential libpq-dev
+      
+      - checkout
+      
+      - save_cache:
+          key: grilled-source-v2
+          paths:
+            - ".git"
+            
+      - restore_cache:
+          key: grilled-bundle-v2-{{ checksum "Gemfile.lock" }}
+      
+      - run: bundle check --path=vendor/bundle || bundle install --path=vendor/bundle --jobs=4 --retry=3
+      
+      - save_cache:
+          key: grilled-bundle-v2-{{ checksum "Gemfile.lock" }}
+          paths:
+            - vendor/bundle
+            
+      - run: |
+          mkdir -p config
+          echo 'test:
+            database: circle_test
+            adapter: postgresql
+            encoding: unicode
+            pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+            username: root
+            host: localhost
+          ' > config/database.yml
+          
+      - run: |
+          export RAILS_ENV="test"
+          export RACK_ENV="test"
+          bundle exec rake db:create db:schema:load --trace
+          
+      - run: |
+          bundle exec rspec \
+            --color \
+            --require spec_helper \
+            --format documentation \
+            $(circleci tests glob "spec/**/*_spec.rb" | circleci tests split)
+      
+  node:
+    parallelism: 2
+    docker:
+      - image: node:8.3.0-slim
+      
+    steps:
+      - restore_cache:
+          key: grilled-source-v2
+
+      - run:
+          name: install deps
+          command: |
+            apt-get update
+            apt-get install -y git openssh-client
+          
+      - checkout
+      
+      - save_cache:
+          key: grilled-source-v2
+          paths:
+            - ".git"
+            
+      - restore_cache:
+          key: grilled-npm-v2-{{ checksum "package.json" }}
+      
+      - run: npm install
+      
+      - save_cache:
+          key: grilled-npm-v2-{{ checksum "package.json" }}
+          paths:
+            - node_modules
+            
+      - run: |
+          npm test \
+            $(circleci tests glob "test/**/*spec.js" | circleci tests split)
+      
+workflows:
+  version: 2
+  
+  build_test:
+    jobs:
+      - ruby
+      - node
